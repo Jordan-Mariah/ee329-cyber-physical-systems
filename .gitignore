@@ -1,0 +1,54 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.tmp
+*.bak
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# MATLAB/Simulink generated files
+slprj/
+*.asv
+*.mex*
+*.slxc
+
+# Embedded/build output
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+dist/
+
+# Vivado/generated output
+*.jou
+*.log
+*.str
+*.wdb
+*.pb
+*.xpr.cache/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+xsim.dir/
+webtalk/
+
+# Large data/model artifacts
+*.mat
+*.h5
+*.hdf5
+*.nc
+*.tif
+*.tiff
+*.zip
+*.7z
+*.rar
