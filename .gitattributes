@@ -1,0 +1,17 @@
+* text=auto
+
+*.c text
+*.h text
+*.cpp text
+*.hpp text
+*.ino text
+*.m text
+*.py text
+*.sv text
+*.v text
+*.vhd text
+*.vhdl text
+*.js text
+*.css text
+*.html text
+*.md text
