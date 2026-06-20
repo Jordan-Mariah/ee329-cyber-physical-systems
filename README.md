@@ -1,4 +1,4 @@
-# EE 329 Cyber-Physical Systems
+# EE 329 Embedded Systems
 
 Embedded systems coursework covering microcontroller peripherals, firmware structure, serial communication, and hardware interfacing.
 
