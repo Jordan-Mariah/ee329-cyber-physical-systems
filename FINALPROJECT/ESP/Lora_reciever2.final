@@ -1,0 +1,227 @@
+#include <Wire.h>
+#include "LoRaWan_APP.h"
+#include "Arduino.h"
+
+// I2C Pin and Device Address
+#define SDA_PIN 19
+#define SCL_PIN 20
+#define I2C_DEV_ADDR 0x51
+
+// LoRa Parameters
+#define RF_FREQUENCY 915000000 // Hz
+#define TX_OUTPUT_POWER 14     // dBm
+#define LORA_BANDWIDTH 0       // [0: 125 kHz, 1: 250 kHz, 2: 500 kHz]
+#define LORA_SPREADING_FACTOR 7 // [SF7..SF12]
+#define LORA_CODINGRATE 1       // [1: 4/5, 2: 4/6, 3: 4/7, 4: 4/8]
+#define LORA_PREAMBLE_LENGTH 8  // Same for Tx and Rx
+#define LORA_SYMBOL_TIMEOUT 0   // Symbols
+#define LORA_FIX_LENGTH_PAYLOAD_ON false
+#define LORA_IQ_INVERSION_ON false
+#define RX_TIMEOUT_VALUE 1000
+#define BUFFER_SIZE 30 // Define the payload size here
+
+// Global Variables
+volatile uint8_t rxBuffer[32];  // I2C received data buffer
+volatile size_t dataLength = 0;
+int keypadValue = -1;           // Global variable to store the keypad value
+
+char txpacket[BUFFER_SIZE]; // LoRa transmit buffer
+char rxpacket[BUFFER_SIZE]; // LoRa receive buffer
+
+static RadioEvents_t RadioEvents;
+
+int16_t rssi, rxSize;
+bool lora_idle = true;
+
+float tankHeight = -1;       // Tank height in cm
+float maxWaterLevel = -1;    // Max water level in cm
+float offset = 0;            // Offset to adjust sensor readings
+bool tankModeActive = false; // Flag for tank mode
+bool tankConfigured = false; // Flag for tank configuration
+
+// Function Prototypes
+void onReceive(int len);
+void onRequest();
+void storeKeypadValue();
+void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr);
+void setupI2C();
+void setupLoRa();
+void configureTankAndWaterLevel();
+float adjustSensorReading(float sensorReading);
+float getTankOrWaterLevel(const char *prompt);
+
+// I2C Event Handlers
+void onReceive(int len) {
+    memset((void *)rxBuffer, 0, sizeof(rxBuffer)); // Clear buffer
+    dataLength = 0;
+
+    while (Wire.available()) {
+        size_t length = dataLength; // Temporary non-volatile copy
+        if (length < sizeof(rxBuffer)) {
+            rxBuffer[length] = Wire.read();
+            dataLength = length + 1; // Assign incremented value back
+        }
+    }
+
+    storeKeypadValue(); // Store the received keypad value
+}
+
+void onRequest() {
+    Wire.write((const uint8_t *)rxBuffer, dataLength);
+}
+
+/**
+ * @brief Stores the value from the keypad into a global variable.
+ */
+void storeKeypadValue() {
+    if (dataLength > 0) {
+        keypadValue = rxBuffer[0]; // Store the first value from the buffer
+        Serial.printf("Keypad Value Stored: %d\n", keypadValue);
+    } else {
+        keypadValue = -1; // Reset the value if no valid data
+    }
+}
+
+/**
+ * @brief LoRa RX Done event handler
+ */
+void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr) {
+    rssi = rssi;
+    rxSize = size;
+    memcpy(rxpacket, payload, size);
+    rxpacket[size] = '\0';
+    Radio.Sleep();
+    Serial.printf("\r\nReceived packet \"%s\" with RSSI %d, length %d\r\n", rxpacket, rssi, rxSize);
+
+    // Adjust sensor reading with the offset before printing
+    float sensorReading = atof(rxpacket); // Convert received string to float
+    float adjustedReading = adjustSensorReading(sensorReading);
+    Serial.printf("Adjusted Sensor Reading: %.2f cm\n", adjustedReading);
+
+    lora_idle = true;
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    setupI2C();  // Initialize I2C
+    setupLoRa(); // Initialize LoRa
+
+    Serial.println("Press 1 to enter Tank Mode");
+}
+
+void loop() {
+    if (!tankModeActive) {
+        if (keypadValue == 1) { // Check if the keypad input is '1'
+            tankModeActive = true;
+            keypadValue = -1; // Reset keypad value
+            Serial.println("Tank Mode Activated!");
+        }
+    } else if (!tankConfigured) {
+        configureTankAndWaterLevel();
+        tankConfigured = true;
+    } else {
+        if (lora_idle) {
+            lora_idle = false;
+            Serial.println("Requesting data from sender...");
+            Radio.Rx(0); // Enter RX mode
+        }
+        Radio.IrqProcess(); // Process LoRa IRQ
+    }
+
+    delay(100); // Small delay for stability
+}
+
+/**
+ * @brief Initializes I2C communication
+ */
+void setupI2C() {
+    if (!Wire.begin(I2C_DEV_ADDR, SDA_PIN, SCL_PIN, 100000)) {
+        Serial.println("Failed to initialize I2C slave!");
+        while (1);
+    }
+    Serial.println("I2C slave initialized successfully.");
+
+    Wire.onReceive(onReceive);
+    Wire.onRequest(onRequest);
+}
+
+/**
+ * @brief Initializes LoRa communication
+ */
+void setupLoRa() {
+    Mcu.begin(HELTEC_BOARD, SLOW_CLK_TPYE);
+    RadioEvents.RxDone = OnRxDone;
+
+    Radio.Init(&RadioEvents);
+    Radio.SetChannel(RF_FREQUENCY);
+    Radio.SetRxConfig(MODEM_LORA, LORA_BANDWIDTH, LORA_SPREADING_FACTOR,
+                      LORA_CODINGRATE, 0, LORA_PREAMBLE_LENGTH,
+                      LORA_SYMBOL_TIMEOUT, LORA_FIX_LENGTH_PAYLOAD_ON,
+                      0, true, 0, 0, LORA_IQ_INVERSION_ON, true);
+    Serial.println("LoRa receiver initialized.");
+}
+
+/**
+ * @brief Prompt the user to configure tank height and water level, and calculate offset.
+ */
+void configureTankAndWaterLevel() {
+    tankHeight = getTankOrWaterLevel("Enter tank height (m, m, cm, cm, .cm):");
+    Serial.printf("Tank Height Configured: %.2f cm\n", tankHeight);
+
+    maxWaterLevel = getTankOrWaterLevel("Enter max water level (m, m, cm, cm, .cm):");
+    Serial.printf("Max Water Level Configured: %.2f cm\n", maxWaterLevel);
+
+    offset = tankHeight - maxWaterLevel;
+    Serial.printf("Offset Calculated: %.2f cm\n", offset);
+}
+
+/**
+ * @brief Prompt the user for tank height or max water level using the keypad.
+ *        Example: Input `54673` will be interpreted as 54m 67.3cm.
+ * @param prompt Prompt to display on the serial monitor.
+ * @return float Height or water level in centimeters.
+ */
+float getTankOrWaterLevel(const char *prompt) {
+    Serial.println(prompt);
+    int heightM = 0;   // To store the meters portion
+    int heightCm = 0;  // To store the centimeters portion
+    float heightDecimal = 0.0; // To store the fractional centimeters
+    int inputDigits[5] = {-1, -1, -1, -1, -1}; // Array to store the 5 digits from the keypad
+
+    // Collect 5 digits from the keypad
+    for (int i = 0; i < 5; i++) {
+        while (keypadValue == -1) {
+            delay(100); // Wait for input
+        }
+        inputDigits[i] = keypadValue;
+        Serial.printf("Received digit: %d\n", keypadValue); // Debugging
+        keypadValue = -1; // Reset after processing
+    }
+
+    // Parse the meters portion (first 2 digits)
+    heightM = inputDigits[0] * 10 + inputDigits[1];
+
+    // Parse the centimeters portion (next 2 digits)
+    heightCm = inputDigits[2] * 10 + inputDigits[3];
+
+    // Parse the fractional centimeters portion (last digit)
+    heightDecimal = inputDigits[4] / 10.0;
+
+    // Print the parsed values
+    Serial.printf("Parsed Value: %dm %dcm %.1fmm\n", heightM, heightCm, heightDecimal * 10);
+
+    // Combine into a single float value in centimeters
+    return (heightM * 100.0) + heightCm + heightDecimal; // Convert meters to cm
+}
+
+/**
+ * @brief Adjust sensor reading based on the pre-calculated offset.
+ * @param sensorReading Raw sensor reading in centimeters.
+ * @return float Adjusted sensor reading in centimeters.
+ */
+float adjustSensorReading(float sensorReading) {
+  float tankPerC = ((tankHeight - sensorReading)/maxWaterLevel) * 100;
+  Serial.println("Water Tank %Full: " + String(tankPerC) + "%");
+    return tankHeight - sensorReading;
+}
